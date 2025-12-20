@@ -1,0 +1,47 @@
+format = """
+$custom\
+$username\
+$hostname\
+$directory\
+$git_branch\
+$git_status\
+$line_break\
+$character"""
+
+[username]
+style_user = "bold green"
+style_root = "bold red"
+format = "[$user]($style)"
+show_always = true
+
+[hostname]
+ssh_only = false
+format = "@[$hostname](bold blue) "
+disabled = false
+
+[directory]
+format = "in [$path]($style) "
+style = "bold cyan"
+truncation_length = 3
+
+[character]
+success_symbol = "[❯](bold green)"
+error_symbol = "[❯](bold red)"
+
+[git_branch]
+format = "on [$symbol$branch]($style) "
+style = "bold purple"
+
+[git_status]
+format = '([$all_status$ahead_behind]($style) )'
+style = "bold yellow"
+
+[container]
+disabled = true
+
+[custom.mode]
+description = "Shows sandbox or god mode"
+command = "if sudo -n true 2>/dev/null; then echo '⚡'; else echo '🔒'; fi"
+when = true
+format = "[$output]($style) "
+style = "bold yellow"

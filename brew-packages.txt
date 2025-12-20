@@ -1,0 +1,17 @@
+git
+antidote
+starship
+mise
+micro
+eza
+gh
+jq
+biome
+bat
+node
+fzf
+ripgrep
+uv
+unar
+sqlite
+oven-sh/bun/bun
