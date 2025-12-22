@@ -42,9 +42,21 @@ if [ -z "$SANDBOX_USER" ]; then
     exit 1
 fi
 
-if [ "$(id -u)" -ne 0 ]; then
-    exec sudo SANDBOX_USER="$SANDBOX_USER" "$0" "$@"
+# * Handle -c flag specially to preserve command string
+SANDBOX_MODE="login"
+SANDBOX_CMD=""
+if [ "$1" = "-c" ]; then
+    SANDBOX_MODE="cmd"
+    shift
+    SANDBOX_CMD="$*"
 fi
+
+if [ "$(id -u)" -ne 0 ]; then
+    exec sudo SANDBOX_USER="$SANDBOX_USER" SANDBOX_MODE="$SANDBOX_MODE" SANDBOX_CMD="$SANDBOX_CMD" "$0"
+fi
+
+# * Export for the unshare subshell
+export SANDBOX_USER SANDBOX_MODE SANDBOX_CMD
 
 unshare --mount /bin/bash -c '
     mount -t tmpfs none /Users 2>/dev/null
@@ -53,8 +65,21 @@ unshare --mount /bin/bash -c '
     mount -t tmpfs none /Library 2>/dev/null
     mount -t tmpfs none /Volumes 2>/dev/null
     mount -t tmpfs none /private 2>/dev/null
-    cd /home/'"$SANDBOX_USER"'
-    exec sudo -u '"$SANDBOX_USER"' /bin/zsh --login 2>/dev/null || exec sudo -u '"$SANDBOX_USER"' /bin/bash --login
+    cd /home/$SANDBOX_USER
+
+    # * Pick shell binary
+    if [ -x /bin/zsh ]; then
+        SHELL_BIN=/bin/zsh
+    else
+        SHELL_BIN=/bin/bash
+    fi
+
+    # * Run command or interactive login
+    if [ "$SANDBOX_MODE" = "cmd" ]; then
+        exec sudo -u $SANDBOX_USER $SHELL_BIN -c "$SANDBOX_CMD"
+    else
+        exec sudo -u $SANDBOX_USER $SHELL_BIN --login
+    fi
 '
 SANDBOX_EOF
 orb -m "$MACHINE" sudo chmod +x /usr/local/bin/sandbox-shell
@@ -63,7 +88,7 @@ orb -m "$MACHINE" sudo chmod +x /usr/local/bin/sandbox-shell
 echo "▶ Installing login wrapper"
 orb -m "$MACHINE" sudo tee "/usr/local/bin/${USERNAME}-login" > /dev/null << LOGIN_EOF
 #!/bin/bash
-exec sudo SANDBOX_USER="$USERNAME" /usr/local/bin/sandbox-shell
+exec sudo SANDBOX_USER="$USERNAME" /usr/local/bin/sandbox-shell "\$@"
 LOGIN_EOF
 orb -m "$MACHINE" sudo chmod +x "/usr/local/bin/${USERNAME}-login"
 
@@ -80,7 +105,7 @@ orb -m "$MACHINE" sudo usermod -s "/usr/local/bin/${USERNAME}-login" "$USERNAME"
 # * Allow user to run sandbox-shell via sudo without password
 echo "▶ Configuring sudoers"
 orb -m "$MACHINE" bash -c "
-    echo '$USERNAME ALL=(root) SETENV:NOPASSWD: /usr/local/bin/sandbox-shell' | sudo tee '/etc/sudoers.d/${USERNAME}-sandbox' > /dev/null
+    echo '$USERNAME ALL=(root) SETENV:NOPASSWD: /usr/local/bin/sandbox-shell, /usr/local/bin/sandbox-shell *' | sudo tee '/etc/sudoers.d/${USERNAME}-sandbox' > /dev/null
     sudo chmod 440 '/etc/sudoers.d/${USERNAME}-sandbox'
     sudo visudo -c > /dev/null
 "

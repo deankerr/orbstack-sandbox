@@ -54,3 +54,58 @@ The `create-user.sh` script:
 4. User sees empty directories instead of macOS filesystem
 
 This is a seatbelt (prevents accidents and credential theft), not a jail (determined attackers can still escape via network or kernel exploits).
+
+## Sandbox Shell Gotchas
+
+Several subtle issues can break tools running inside the sandbox:
+
+### 1. stderr gets swallowed
+
+**Symptom:** No error output visible in the sandbox shell.
+
+**Cause:** Using `2>/dev/null` on the final `exec` line to suppress "zsh not found" errors also suppresses all stderr for the session.
+
+**Fix:** Check for shell existence before exec instead of redirecting stderr:
+```bash
+if [ -x /bin/zsh ]; then
+    exec sudo -u $USER /bin/zsh --login
+else
+    exec sudo -u $USER /bin/bash --login
+fi
+```
+
+### 2. Tools can't run commands via `$SHELL -c`
+
+**Symptom:** Tools like opencode that spawn subprocesses via `$SHELL -c "command"` produce no output.
+
+**Cause:** Two issues:
+1. `$SHELL` points to the login wrapper (`/usr/local/bin/{user}-login`), not `/bin/zsh`
+2. The login wrapper didn't pass `-c` args through to the actual shell
+
+**Fix:**
+- Set `export SHELL=/bin/zsh` in `.zshrc` so tools use zsh directly
+- Also fixed the wrapper to handle `-c` properly (see below)
+
+### 3. Arguments to sandbox-shell get word-split
+
+**Symptom:** `$SHELL -c "echo hello world"` only prints empty line or partial output.
+
+**Cause:** Passing args through env vars loses quoting. `SANDBOX_ARGS="$*"` turns `-c "echo hello"` into `-c echo hello`, then `$SHELL_BIN $SANDBOX_ARGS` becomes `zsh -c echo hello` where zsh interprets "echo" as the command and "hello" as `$0`.
+
+**Fix:** Handle `-c` specially—extract the command string into `SANDBOX_CMD` and pass it quoted:
+```bash
+if [ "$SANDBOX_MODE" = "cmd" ]; then
+    exec sudo -u $USER $SHELL_BIN -c "$SANDBOX_CMD"
+fi
+```
+
+### 4. sudoers blocks commands with arguments
+
+**Symptom:** `sandbox-shell -c "..."` silently fails.
+
+**Cause:** sudoers rule `/usr/local/bin/sandbox-shell` only allows the command with zero arguments.
+
+**Fix:** Allow both forms:
+```
+user ALL=(root) SETENV:NOPASSWD: /usr/local/bin/sandbox-shell, /usr/local/bin/sandbox-shell *
+```

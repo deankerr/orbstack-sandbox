@@ -1,7 +1,6 @@
 git
 antidote
 starship
-mise
 micro
 eza
 gh
@@ -15,3 +14,5 @@ uv
 unar
 sqlite
 oven-sh/bun/bun
+opencode
+claude-code
