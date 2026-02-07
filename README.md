@@ -2,7 +2,7 @@
 
 Sandboxed OrbStack VMs for LLM coding agents. OrbStack is a fast, lightweight way to run Linux VMs on macOS — but it mounts the host filesystem with full access by default. This locks that down so agents running in permissive modes (e.g. `claude --dangerously-skip-permissions`) can work on dev tasks without risking the host machine.
 
-It is not designed or tested for executing untrusted code, or protecting from adversarial user entities.
+It is not designed or tested for executing untrusted code, or protecting from adversarial inhabitant entities.
 
 ## Quick Start
 
@@ -57,9 +57,15 @@ bun, node, uv, git, gh, curl, wget, ripgrep, fd, fzf, bat, eza, tree, jq, yq, mi
 
 See `brew-packages.txt` for the full list.
 
-## Limitations
+## VS Code Remote SSH
 
-This is a seatbelt, not a jail:
+OrbStack's auto-generated SSH config only matches the `orb` host alias. To connect to specific machines via `*.orb.local` hostnames (e.g. in VS Code Remote SSH), add this to `~/.ssh/config` before the `Host *` block:
 
-- Prevents accidental filesystem damage and credential access
-- Does NOT prevent network exfiltration, kernel exploits, or determined escape attempts
+```
+Host *.orb.local
+  IdentityFile ~/.orbstack/ssh/id_ed25519
+  IdentitiesOnly yes
+  UserKnownHostsFile ~/.orbstack/ssh/known_hosts
+```
+
+Then connect as any user: `dean@orb5.orb.local`, `agent@orb5.orb.local`, etc.
