@@ -1,63 +1,65 @@
 # OrbStack Sandbox
 
-Set up isolated Ubuntu VMs in OrbStack with sandboxed users that can't access your macOS filesystem.
+Sandboxed OrbStack VMs for LLM coding agents. OrbStack is a fast, lightweight way to run Linux VMs on macOS — but it mounts the host filesystem with full access by default. This locks that down so agents running in permissive modes (e.g. `claude --dangerously-skip-permissions`) can work on dev tasks without risking the host machine.
+
+It is not designed or tested for executing untrusted code, or protecting from adversarial user entities.
 
 ## Quick Start
 
 ```bash
-# Set up a new machine (or configure existing one)
+# Set up a new VM (or configure existing one)
 ./setup.sh myvm
 
 # Create a sandboxed user
 ./create-user.sh myvm agent
 
-# Connect
-orb -m myvm              # as yourself
-orb -m myvm -u agent     # as sandboxed user
+# Connect as sandboxed user
+orb -m myvm -u agent
 ```
 
-## Scripts
+## How It Works
 
-| Script | Purpose |
-|--------|---------|
-| `setup.sh [machine]` | Create/configure Ubuntu VM with zsh, homebrew, starship |
-| `create-user.sh <machine> <user>` | Create sandboxed user with isolated mount namespace |
+OrbStack mounts `/Users` and `/mnt/mac` into every VM with full read/write access — exposing your home directory, SSH keys, and credentials to any process in the VM.
 
-## What It Does
-
-### setup.sh
-- Creates Ubuntu VM (if needed)
-- Installs: zsh, homebrew, starship, mise, micro, eza
-- Copies zsh/starship config from this repo
-- Copies `~/.claude/CLAUDE.md` for Claude Code
-
-### create-user.sh
-- Creates unprivileged user with custom login shell
-- Login shell uses `unshare --mount` to hide macOS paths
-- Sandboxed user sees empty `/Users`, `/mnt/mac`, etc.
-- Copies shell config and CLAUDE.md to sandboxed user's home
-
-## The Problem
-
-OrbStack mounts macOS filesystems via virtiofs:
-- `/Users` → your home, SSH keys, credentials
-- `/mnt/mac` → entire macOS root
-
-These mounts bypass Linux permissions. Any user can read/write them.
-
-## The Solution
-
-Mount namespaces give each sandboxed user an isolated view where macOS paths are hidden behind empty tmpfs mounts.
+This repo creates sandbox users with isolated mount namespaces. Each sandbox user sees empty directories in place of macOS paths:
 
 ```
 Admin user:              Sandboxed user:
-/Users → macOS           /Users → empty tmpfs
-/mnt/mac → macOS         /mnt/mac → empty tmpfs
+/Users → macOS home      /Users → empty
+/mnt/mac → macOS root    /mnt/mac → empty
 ```
+
+The admin user retains full access and can read/write sandbox home directories via POSIX ACLs (no sudo needed).
+
+## Scripts
+
+| Script                            | Purpose                                                            |
+| --------------------------------- | ------------------------------------------------------------------ |
+| `setup.sh [machine]`              | Create/configure Ubuntu VM with zsh, homebrew, starship, dev tools |
+| `create-user.sh <machine> <user>` | Create sandboxed user with isolated mount namespace                |
+
+### setup.sh
+
+- Creates Ubuntu VM (if needed)
+- Installs system packages, Homebrew, and tools from `brew-packages.txt`
+- Configures zsh, starship, antidote (plugin manager), and git
+
+### create-user.sh
+
+- Creates unprivileged user with custom login shell
+- Login shell uses `unshare --mount` + `setpriv` for namespace isolation and privilege drop
+- Copies shell/git config from admin user
+- Sets up ACLs so admin can access sandbox home without sudo
+
+## Pre-installed Tools
+
+bun, node, uv, git, gh, curl, wget, ripgrep, fd, fzf, bat, eza, tree, jq, yq, micro, fresh-editor, tmux, sqlite, unar, starship, antidote
+
+See `brew-packages.txt` for the full list.
 
 ## Limitations
 
 This is a seatbelt, not a jail:
-- Protects against accidental `rm -rf ~`
-- Prevents credential theft
-- Does NOT protect against network exfiltration, kernel exploits, or determined attackers
+
+- Prevents accidental filesystem damage and credential access
+- Does NOT prevent network exfiltration, kernel exploits, or determined escape attempts

@@ -1,3 +1,6 @@
+# * Terminal compatibility (ghostty terminfo often missing in VMs)
+[[ "$TERM" == "xterm-ghostty" ]] && export TERM=xterm-256color
+
 # * Homebrew
 eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
 

@@ -33,6 +33,13 @@ orb -m "$MACHINE" bash -c "
     fi
 "
 
+# * Grant admin read/write access to sandbox home via ACLs
+echo "▶ Setting up admin access"
+orb -m "$MACHINE" bash -c "
+    sudo setfacl -R -m u:$ADMIN_USER:rwX $USER_HOME
+    sudo setfacl -R -d -m u:$ADMIN_USER:rwX $USER_HOME
+"
+
 # * Install sandbox-shell: uses unshare to hide macOS mounts
 echo "▶ Installing sandbox-shell"
 orb -m "$MACHINE" sudo tee /usr/local/bin/sandbox-shell > /dev/null << 'SANDBOX_EOF'
@@ -59,96 +66,70 @@ fi
 export SANDBOX_USER SANDBOX_MODE SANDBOX_CMD
 
 unshare --mount /bin/bash -c '
-    mount -t tmpfs none /Users 2>/dev/null
-    mount -t tmpfs none /mnt/mac 2>/dev/null
-    mount -t tmpfs none /Applications 2>/dev/null
-    mount -t tmpfs none /Library 2>/dev/null
-    mount -t tmpfs none /Volumes 2>/dev/null
-    mount -t tmpfs none /private 2>/dev/null
-    cd /home/$SANDBOX_USER
+    for p in /Users /mnt/mac /Applications /Library /Volumes /private; do
+        mount -t tmpfs none $p 2>/dev/null
+    done
+    export HOME=/home/$SANDBOX_USER
+    cd $HOME
+    SHELL_BIN=$( [ -x /bin/zsh ] && echo /bin/zsh || echo /bin/bash )
 
-    # * Pick shell binary
-    if [ -x /bin/zsh ]; then
-        SHELL_BIN=/bin/zsh
-    else
-        SHELL_BIN=/bin/bash
-    fi
-
-    # * Run command or interactive login
     if [ "$SANDBOX_MODE" = "cmd" ]; then
-        exec sudo -u $SANDBOX_USER $SHELL_BIN -c "$SANDBOX_CMD"
+        exec setpriv --reuid=$SANDBOX_USER --regid=$SANDBOX_USER --init-groups $SHELL_BIN -c "$SANDBOX_CMD"
     else
-        exec sudo -u $SANDBOX_USER $SHELL_BIN --login
+        exec setpriv --reuid=$SANDBOX_USER --regid=$SANDBOX_USER --init-groups $SHELL_BIN --login
     fi
 '
 SANDBOX_EOF
 orb -m "$MACHINE" sudo chmod +x /usr/local/bin/sandbox-shell
 
-# * Create per-user login wrapper that invokes sandbox-shell
-echo "▶ Installing login wrapper"
-orb -m "$MACHINE" sudo tee "/usr/local/bin/${USERNAME}-login" > /dev/null << LOGIN_EOF
+# * Create login wrapper, register shell, configure sudoers
+echo "▶ Configuring login shell"
+orb -m "$MACHINE" bash -c "
+    # Login wrapper
+    cat > /tmp/${USERNAME}-login << 'WRAPPER'
 #!/bin/bash
-exec sudo SANDBOX_USER="$USERNAME" /usr/local/bin/sandbox-shell "\$@"
-LOGIN_EOF
-orb -m "$MACHINE" sudo chmod +x "/usr/local/bin/${USERNAME}-login"
+exec sudo SANDBOX_USER=\"$USERNAME\" /usr/local/bin/sandbox-shell \"\\\$@\"
+WRAPPER
+    sudo mv /tmp/${USERNAME}-login /usr/local/bin/${USERNAME}-login
+    sudo chmod +x /usr/local/bin/${USERNAME}-login
 
-# * Register the wrapper as a valid login shell
-orb -m "$MACHINE" bash -c "
-    if ! grep -q '/usr/local/bin/${USERNAME}-login' /etc/shells; then
+    # Register as valid shell
+    grep -q '/usr/local/bin/${USERNAME}-login' /etc/shells || \
         echo '/usr/local/bin/${USERNAME}-login' | sudo tee -a /etc/shells > /dev/null
-    fi
-"
 
-# * Set it as the user's default shell
-orb -m "$MACHINE" sudo usermod -s "/usr/local/bin/${USERNAME}-login" "$USERNAME"
+    # Set as user's shell
+    sudo usermod -s '/usr/local/bin/${USERNAME}-login' '$USERNAME'
 
-# * Allow user to run sandbox-shell via sudo without password
-echo "▶ Configuring sudoers"
-orb -m "$MACHINE" bash -c "
+    # Sudoers
     echo '$USERNAME ALL=(root) SETENV:NOPASSWD: /usr/local/bin/sandbox-shell, /usr/local/bin/sandbox-shell *' | sudo tee '/etc/sudoers.d/${USERNAME}-sandbox' > /dev/null
     sudo chmod 440 '/etc/sudoers.d/${USERNAME}-sandbox'
     sudo visudo -c > /dev/null
 "
 
-# * Copy shell config (.zshrc, plugins, starship, gitconfig) from admin
+# * Copy config files and create README
 echo "▶ Copying config files"
 orb -m "$MACHINE" bash -c "
     for f in .zshrc .zsh_plugins.txt .zsh_plugins.zsh .gitconfig; do
-        [ -f '$ADMIN_HOME/'\$f ] && sudo cp '$ADMIN_HOME/'\$f '$USER_HOME/'
+        [ -f '$ADMIN_HOME/'\$f ] && cp '$ADMIN_HOME/'\$f '$USER_HOME/'
     done
-    if [ -f '$ADMIN_HOME/.config/starship.toml' ]; then
-        sudo mkdir -p '$USER_HOME/.config'
-        sudo cp '$ADMIN_HOME/.config/starship.toml' '$USER_HOME/.config/'
-    fi
+    [ -f '$ADMIN_HOME/.config/starship.toml' ] && {
+        mkdir -p '$USER_HOME/.config'
+        cp '$ADMIN_HOME/.config/starship.toml' '$USER_HOME/.config/'
+    }
+    cat << 'README' > '$USER_HOME/README.md'
+# Sandbox Environment
+
+Sandboxed Ubuntu VM on macOS (OrbStack). Your account is isolated from the host filesystem. You have network access but no sudo.
+
+Installed tools: bun, node, uv, git, gh, curl, wget, ripgrep, fd, fzf, bat, eza, tree, jq, yq, tmux, sqlite, unar
+
+If a task requires a tool that is not installed, ask for it rather than working around the limitation.
+README
     sudo chown -R '$USERNAME:$USERNAME' '$USER_HOME'
+
+    # Clean up bash configs (using zsh)
+    rm -f '$USER_HOME/.bashrc' '$USER_HOME/.bash_logout' '$USER_HOME/.profile'
 "
-
-# * Copy CLAUDE.md for Claude Code context
-echo "▶ Copying CLAUDE.md"
-orb -m "$MACHINE" sudo mkdir -p "$USER_HOME/.claude"
-orb push -m "$MACHINE" "$HOME/.claude/CLAUDE.md" "$USER_HOME/.claude/CLAUDE.md" 2>/dev/null || echo "  No CLAUDE.md found, skipping"
-orb -m "$MACHINE" sudo chown -R "$USERNAME:$USERNAME" "$USER_HOME/.claude"
-
-# * Create a README explaining the sandbox restrictions
-echo "▶ Creating user README"
-orb -m "$MACHINE" sudo tee "/home/$USERNAME/README.md" > /dev/null << 'README_EOF'
-# Sandboxed Environment
-
-You are running in a sandboxed shell. macOS filesystem paths are hidden.
-
-## What's restricted
-- /Users, /mnt/mac, /Applications, /Library, /Volumes - all empty
-- No sudo access (except the sandbox wrapper itself)
-- No access to other users' home directories
-
-## What works
-- Your home directory: ~/
-- Network access
-- Installing packages in your home (npm, pip --user, etc.)
-
-If you need system packages installed, ask the admin user.
-README_EOF
-orb -m "$MACHINE" sudo chown "$USERNAME:$USERNAME" "/home/$USERNAME/README.md"
 
 echo ""
 echo "✓ Setup complete"

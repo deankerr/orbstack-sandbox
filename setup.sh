@@ -26,7 +26,7 @@ fi
 # * Install base system packages via apt
 echo "▶ Installing system packages"
 orb -m "$MACHINE" sudo apt-get update
-orb -m "$MACHINE" sudo apt-get install -y build-essential curl git zsh
+orb -m "$MACHINE" sudo apt-get install -y build-essential curl git zsh acl
 
 # * Install Homebrew for Linux
 echo "▶ Installing Homebrew"
@@ -58,11 +58,6 @@ orb -m "$MACHINE" zsh -c '
     antidote load
 '
 
-# * Copy user's CLAUDE.md for Claude Code context
-echo "▶ Copying CLAUDE.md"
-orb -m "$MACHINE" mkdir -p "$VM_HOME/.claude"
-orb push -m "$MACHINE" "$HOME/.claude/CLAUDE.md" "$VM_HOME/.claude/CLAUDE.md" 2>/dev/null || echo "  No CLAUDE.md found, skipping"
-
 # * Set up global git config (default branch + user info from .env)
 echo "▶ Configuring git"
 orb -m "$MACHINE" git config --global init.defaultBranch main
@@ -76,6 +71,12 @@ fi
 # * Set zsh as default shell
 echo "▶ Setting default shell to zsh"
 orb -m "$MACHINE" sudo chsh -s /bin/zsh "$VM_USER"
+
+# * Install ghostty terminfo (if running from Ghostty)
+if infocmp -x xterm-ghostty &>/dev/null; then
+    echo "▶ Installing ghostty terminfo"
+    infocmp -x xterm-ghostty | orb -m "$MACHINE" bash -c 'sudo tic -x -'
+fi
 
 echo ""
 echo "✓ Setup complete"

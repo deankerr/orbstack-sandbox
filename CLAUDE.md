@@ -1,111 +1,42 @@
-# CLAUDE.md
-
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+# orbstack-sandbox
 
 ## Overview
 
-This repo provides scripts to set up isolated Ubuntu VMs in OrbStack with sandboxed users that cannot access macOS filesystems. It solves the security problem where OrbStack mounts `/Users` and `/mnt/mac` with full access to anyone in the VM.
+Sandboxed OrbStack VMs for LLM coding agents. OrbStack runs lightweight Linux VMs on macOS, but mounts the host filesystem (`/Users`, `/mnt/mac`) with full read/write access by default. This repo locks that down so agents running in permissive modes (e.g. `claude --dangerously-skip-permissions`) can't touch the host machine.
+
+Each sandbox user gets an isolated mount namespace where macOS paths are hidden behind empty tmpfs mounts. It's a seatbelt — prevents accidental damage and credential access — not a jail.
 
 ## Scripts
 
-| Script | Purpose |
-|--------|---------|
-| `./setup.sh [machine]` | Create/configure Ubuntu VM with dev tools |
+| Script                              | Purpose                                             |
+| ----------------------------------- | --------------------------------------------------- |
+| `./setup.sh [machine]`              | Create/configure Ubuntu VM with dev tools           |
 | `./create-user.sh <machine> <user>` | Create sandboxed user with isolated mount namespace |
-| `./sync-claude.sh <machine> [user...]` | Sync `~/.claude/CLAUDE.md` from macOS to VM users |
-
-## Critical: Never Use `~` in Scripts
-
-Never use `~` for paths in scripts that interact with VMs. The tilde expands on macOS *before* `orb` runs, so `orb -m myvm cp foo ~/.zshrc` writes to `/Users/you/.zshrc` (macOS), not `/home/you/.zshrc` (Linux).
-
-Instead:
-- Use explicit paths: `/home/$USER/.zshrc`
-- Use `orb push` for file transfers: `orb push -m myvm foo /home/user/.zshrc`
 
 ## OrbStack CLI Reference
 
 ```bash
-# Machine management
 orb create ubuntu myvm          # create new machine
 orb list                        # list machines
-orb delete myvm                 # remove machine
-orb start/stop/restart myvm     # control machine state
-
-# Connecting
-orb                             # shell into default machine
-orb -m myvm                     # shell into specific machine
+orb -m myvm                     # shell into machine
 orb -m myvm -u agent            # shell as specific user
-
-# Running commands
-orb -m myvm uname -a            # run single command
-orb -m myvm ./script.sh         # run script
-
-# File transfer
-orb push ~/file.txt /dest/      # macOS → Linux
-orb pull ~/file.txt             # Linux → macOS
+orb -m myvm uname -a            # run command in machine
+orb push -m myvm src /dest      # copy file macOS → Linux
 ```
 
 ## How Sandboxing Works
 
-The `create-user.sh` script:
-1. Creates a user with a custom login shell (`/usr/local/bin/{user}-login`)
-2. The login shell uses `unshare --mount` to create an isolated mount namespace
-3. macOS paths (`/Users`, `/mnt/mac`, etc.) are hidden behind empty tmpfs mounts
-4. User sees empty directories instead of macOS filesystem
+1. `create-user.sh` creates a user with a custom login shell
+2. The login shell calls `unshare --mount` to create an isolated mount namespace
+3. macOS paths (`/Users`, `/mnt/mac`, etc.) are overlaid with empty tmpfs mounts
+4. `setpriv` drops to the unprivileged user — no sudo available inside the sandbox
+5. Admin gets ACL-based read/write access to sandbox home directories (no sudo needed)
 
-This is a seatbelt (prevents accidents and credential theft), not a jail (determined attackers can still escape via network or kernel exploits).
+## Tips
 
-## Sandbox Shell Gotchas
-
-Several subtle issues can break tools running inside the sandbox:
-
-### 1. stderr gets swallowed
-
-**Symptom:** No error output visible in the sandbox shell.
-
-**Cause:** Using `2>/dev/null` on the final `exec` line to suppress "zsh not found" errors also suppresses all stderr for the session.
-
-**Fix:** Check for shell existence before exec instead of redirecting stderr:
-```bash
-if [ -x /bin/zsh ]; then
-    exec sudo -u $USER /bin/zsh --login
-else
-    exec sudo -u $USER /bin/bash --login
-fi
-```
-
-### 2. Tools can't run commands via `$SHELL -c`
-
-**Symptom:** Tools like opencode that spawn subprocesses via `$SHELL -c "command"` produce no output.
-
-**Cause:** Two issues:
-1. `$SHELL` points to the login wrapper (`/usr/local/bin/{user}-login`), not `/bin/zsh`
-2. The login wrapper didn't pass `-c` args through to the actual shell
-
-**Fix:**
-- Set `export SHELL=/bin/zsh` in `.zshrc` so tools use zsh directly
-- Also fixed the wrapper to handle `-c` properly (see below)
-
-### 3. Arguments to sandbox-shell get word-split
-
-**Symptom:** `$SHELL -c "echo hello world"` only prints empty line or partial output.
-
-**Cause:** Passing args through env vars loses quoting. `SANDBOX_ARGS="$*"` turns `-c "echo hello"` into `-c echo hello`, then `$SHELL_BIN $SANDBOX_ARGS` becomes `zsh -c echo hello` where zsh interprets "echo" as the command and "hello" as `$0`.
-
-**Fix:** Handle `-c` specially—extract the command string into `SANDBOX_CMD` and pass it quoted:
-```bash
-if [ "$SANDBOX_MODE" = "cmd" ]; then
-    exec sudo -u $USER $SHELL_BIN -c "$SANDBOX_CMD"
-fi
-```
-
-### 4. sudoers blocks commands with arguments
-
-**Symptom:** `sandbox-shell -c "..."` silently fails.
-
-**Cause:** sudoers rule `/usr/local/bin/sandbox-shell` only allows the command with zero arguments.
-
-**Fix:** Allow both forms:
-```
-user ALL=(root) SETENV:NOPASSWD: /usr/local/bin/sandbox-shell, /usr/local/bin/sandbox-shell *
-```
+- **Never use `~` in scripts.** Tilde expands on macOS before `orb` runs. Use explicit paths (`/home/$USER/.zshrc`) or `orb push` for file transfers.
+- **Set `SHELL=/bin/zsh` in the sandbox `.zshrc`.** The login shell is the wrapper script, not zsh. Tools that spawn subprocesses via `$SHELL -c` will break unless `SHELL` points to the real shell.
+- **Handle `-c` args in the sandbox shell carefully.** Passing args through env vars loses quoting. The sandbox-shell handles `-c` as a special case, extracting the command string and passing it quoted to preserve word boundaries.
+- **Sudoers must allow arguments.** The rule needs both `/usr/local/bin/sandbox-shell` and `/usr/local/bin/sandbox-shell *` to support `-c` invocations.
+- **Don't redirect stderr on exec lines.** Check for shell existence before exec instead of using `2>/dev/null`, which swallows all stderr for the session.
+- **Export `HOME` before dropping privileges.** `setpriv` doesn't set environment variables. The sandbox-shell must explicitly `export HOME=/home/$SANDBOX_USER` so tools write caches to the right directory.
