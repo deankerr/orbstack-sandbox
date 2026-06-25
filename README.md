@@ -1,8 +1,8 @@
-# OrbStack Sandbox
+# orbstack-sandbox
 
 Sandboxed OrbStack VMs for LLM coding agents. OrbStack is a fast, lightweight way to run Linux VMs on macOS — but it mounts the host filesystem with full access by default. This locks that down so agents running in permissive modes (e.g. `claude --dangerously-skip-permissions`) can work on dev tasks without risking the host machine.
 
-It is not designed or tested for executing untrusted code, or protecting from adversarial inhabitant entities.
+It's a seatbelt, not a jail — it guards against accidental host damage and credential access, not a determined attacker. Don't rely on it to contain untrusted or adversarial code.
 
 ## Quick Start
 
@@ -21,7 +21,7 @@ orb -m myvm -u agent
 
 OrbStack mounts `/Users` and `/mnt/mac` into every VM with full read/write access — exposing your home directory, SSH keys, and credentials to any process in the VM.
 
-This repo creates sandbox users with isolated mount namespaces. Each sandbox user sees empty directories in place of macOS paths:
+This repo gives each sandbox user a custom login shell that runs `unshare --mount` to build a private mount namespace, overlays the macOS paths with empty tmpfs mounts, then uses `setpriv` to drop to the unprivileged user — so there is no sudo inside the sandbox. Each sandbox user sees empty directories in place of macOS paths:
 
 ```
 Admin user:              Sandboxed user:
